@@ -238,9 +238,9 @@ namespace AtmosphericDamage
                                             }
                                         }
 
-                                        //LogGridBlockHits(finalHitDistSq, finalHitPos, cubeGrid, blk, lineColor);
                                         checkVoxel = false;
                                         
+                                        //LogGridBlockHits(finalHitDistSq, finalHitPos, cubeGrid, blk, lineColor);
                                     }
                                 }
 
@@ -255,7 +255,7 @@ namespace AtmosphericDamage
                                             if (voxelCheck != Vector3D.Zero && voxelCheck != null)
                                             {
                                                 finalHitPos = voxelCheck;
-                                                hitDist = 0.002f; //Vector3D.Distance(finalHitPos, lineStartPoint);
+                                                hitDist = Vector3D.Distance(lineStartPoint, finalHitPos);
                                                 checkVoxel = true;
                                                 //LogVoxelHits(hitDist, voxel, finalHitPos);
                                             }
