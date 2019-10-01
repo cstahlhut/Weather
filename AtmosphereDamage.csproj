@@ -162,6 +162,7 @@
     <Compile Include="Logging.cs" />
     <Compile Include="RainEffect.cs" />
     <Compile Include="Utilities.cs" />
+    <Compile Include="StopWatch.cs" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSHARP.Targets" />
   <ProjectExtensions>

@@ -26,10 +26,9 @@ using MyVisualScriptLogicProvider = Sandbox.Game.MyVisualScriptLogicProvider;
 
 namespace AtmosphericDamage
 {
-    [MySessionComponentDescriptor(MyUpdateOrder.BeforeSimulation)]
+    [MySessionComponentDescriptor(MyUpdateOrder.AfterSimulation)]
     public class RainEffect : MySessionComponentBase
     {
-
         private bool _init;
         private static int _updateCount;
         public uint Tick;
@@ -43,7 +42,6 @@ namespace AtmosphericDamage
         private double cameraAltitude;
         private MatrixD customProjectionMatrix;
 
-        private Vector4 whiteColor = Color.White.ToVector4();
         private MyStringId material = MyStringId.GetOrCompute("WeaponLaser");
         private MyStringId squarematerial = MyStringId.GetOrCompute("Square");
         private Vector3D PlanetClosestPoint;
@@ -60,6 +58,8 @@ namespace AtmosphericDamage
         private float lineThickness = 0.05f;
         private MyVoxelBase voxelHitName;
 
+        internal DSUtils DsWatch = new DSUtils();
+
         public override void BeforeStart()
         {
             base.BeforeStart();
@@ -68,13 +68,16 @@ namespace AtmosphericDamage
             customProjectionMatrix = MatrixD.CreatePerspectiveFieldOfView(Camera.FovWithZoom, aspectRatio, 0.1f, 70.0f);
         }
 
-        public override void UpdateBeforeSimulation()
+        public override void UpdateAfterSimulation()
         {
-            if (Tick % 301 == 0)
+            if (Tick % 5 == 0)
             {
-                closestPlanet = MyGamePruningStructure.GetClosestPlanet(Camera.Position);
-                if (closestPlanet != null)
-                    planetCentre = closestPlanet.PositionComp.WorldAABB.Center;
+                if (Camera == null) return;
+                rainImpactEntities.Clear();
+                
+                MyGamePruningStructure.GetTopMostEntitiesInBox(ref frustumBBox, rainImpactEntities);
+                //MyAPIGateway.Parallel.Start(CalculateLines);
+                CalculateLines();
             }
 
             if (Tick % 60 == 0 && closestPlanet != null)
@@ -83,21 +86,21 @@ namespace AtmosphericDamage
                 cameraAltitude = (Camera.Position - cameraDistanceFromSurface).Length();
             }
 
+            if (Tick % 301 == 0)
+            {
+                closestPlanet = MyGamePruningStructure.GetClosestPlanet(Camera.Position);
+                if (closestPlanet != null)
+                    planetCentre = closestPlanet.PositionComp.WorldAABB.Center;
+            }
+
             lines.Clear();
+
+            
         }
 
         public override void Draw()
         {
-            if (Tick % 5 == 0)
-            {
-                if (Camera == null) return;
-                Droplets.DeallocateAll();
-                rainImpactEntities.Clear();
-                MyGamePruningStructure.GetTopMostEntitiesInBox(ref frustumBBox, rainImpactEntities);
-                //MyAPIGateway.Parallel.Start(CalculateLines);
-                CalculateLines();
-            }
-
+           
             //if (Droplets.Active.Count >0) Logging.Instance.WriteLine($"droplets: {Droplets.Active.Count}");
 
             var dropletsToDraw = Droplets.Active;
@@ -109,6 +112,7 @@ namespace AtmosphericDamage
                     if (droplet == null) continue;
                     MyTransparentGeometry.AddLineBillboard(material, droplet.LineColor, droplet.StartPoint, droplet.Direction, droplet.DrawLength, lineThickness);
                 }
+                Droplets.DeallocateAll();
             }
 
             //DrawLineFromPlayerToPlanetCentre();
@@ -117,6 +121,7 @@ namespace AtmosphericDamage
 
         public void CalculateLines()
         {
+            DsWatch.Start("CLines");
             try
             {
                 if (closestPlanet != null)
@@ -134,7 +139,7 @@ namespace AtmosphericDamage
 
                     if (cameraAltitude < (planetAtmosphereAltitude / 2))
                     {
-                        var lineAmount = 5000;
+                        var lineAmount = 100;
                         for (int i = 0; i < lineAmount; i++) // Line calculation LOOP
                         {
                             lineThickness = MyUtils.GetRandomFloat(0.01f, 0.05f);
@@ -171,72 +176,6 @@ namespace AtmosphericDamage
 
                             if (frustumBBox.Intersects(ref lineCheck))
                             {
-                                /*
-                                foreach (var ent in rainImpactEntities) // Line calculation LOOP
-                                {
-                                    if (ent as IMyCubeGrid != null && (ent as IMyCubeGrid).Physics != null)
-                                    {
-                                        lineIntersectedGrids.Add(ent);
-                                    }
-
-                                    if (ent as MyVoxelBase != null)
-                                    {
-                                        lineIntersectedVoxels.Add(ent);
-                                    }
-                                }
-
-                                foreach (var ent in  lineIntersectedGrids)
-                                {
-                                    var cubeGrid = ent as IMyCubeGrid;
-                                    if (cubeGrid != null && cubeGrid.Physics != null)
-                                    {
-
-                                        MyOrientedBoundingBoxD gridOBB = new MyOrientedBoundingBoxD(cubeGrid.LocalAABB, cubeGrid.WorldMatrix);
-                                        //DrawOBB(gridOBB, whiteColor, MySimpleObjectRasterizer.Wireframe, 0.01f);
-
-                                        // If we don't intersect a grid continue.
-                                        if (!gridOBB.Intersects(ref lineCheck).HasValue)
-                                        {
-                                            continue;
-                                        }
-
-                                        hitDist = GridHitCheck(cubeGrid, lineCheck, lineStartPoint, lineEndPoint);
-
-                                        if (hitDist != null)
-                                        {
-                                            hitPos = lineStartPoint + (lineCheck.Direction * hitDist.Value);
-                                            if (finalHitDistSq > hitDist.Value)
-                                            {
-                                                finalHitPos = hitPos;
-                                                finalHitDistSq = hitDist.Value;
-                                                checkVoxel = false;
-                                            }
-                                        }
-                                        //LogGridBlockHits(finalHitDistSq, finalHitPos, cubeGrid, blk, lineColor);
-                                    }
-                                }
-
-                                if (checkVoxel)
-                                {
-                                    foreach (var ent in lineIntersectedVoxels)
-                                    {
-                                        var voxel = ent as MyVoxelBase;
-                                        if (voxel != null)
-                                        {
-                                            var voxelCheck = VoxelHitCheck(voxel, closestPlanet, lineStartPoint, lineEndPoint, lineCheck);
-                                            if (voxelCheck != Vector3D.Zero && voxelCheck != null)
-                                            {
-                                                finalHitPos = voxelCheck;
-                                                hitDist = Vector3D.Distance(lineStartPoint, finalHitPos);
-                                                voxelHitName = voxel;
-                                                isVoxel = true;
-                                            }
-                                        }
-                                    }
-                                }
-                                */
-
-
                                 for (int j = 0; j < rainImpactEntities.Count; j++) // Line calculation LOOP
                                 {
                                     var rainedOnEnt = rainImpactEntities[j];
@@ -305,6 +244,7 @@ namespace AtmosphericDamage
                                     }
                                 }
                                 */
+
                                 /*
                                 // Log Loop sizes
                                 if (_updateCount % 100 == 0)
@@ -333,6 +273,7 @@ namespace AtmosphericDamage
                                 //var dir = hasHit && !checkVoxel ? -lineCheck.Direction : -lineCheck.Direction;
 
                                 lineColor = checkVoxel ? Color.Green : Color.White;
+
                                 if (checkVoxel && voxelHitName != null && _updateCount % 300 == 0)
                                 {
                                     //LogVoxelHits(hitDist, voxelHitName, finalHitPos, lineCheck.Length);
@@ -359,16 +300,13 @@ namespace AtmosphericDamage
                         }
                     }
                 }
+                
             }
             catch (Exception e)
             {
-                if (_updateCount % 100 == 0)
-                {
-                    MyVisualScriptLogicProvider.SendChatMessage(e.ToString(), "Error");
-                }
-
                 Logging.Instance.WriteLine(e.ToString());
             }
+            DsWatch.Complete(true);
         }
 
         public static double? GridHitCheck(IMyCubeGrid cubeGrid, LineD lineCheck, Vector3D lineStartPoint, Vector3D lineEndPoint)
@@ -526,7 +464,7 @@ namespace AtmosphericDamage
                 var lineStartPoint = playerPosition;
                 var lineEndPoint = planetCentre;
                 var lineCheck = new LineD(lineStartPoint, lineEndPoint);
-                DrawLine(whiteColor, lineStartPoint, lineEndPoint);
+                DrawLine(lineColor, lineStartPoint, lineEndPoint);
 
             }
         }
