@@ -57,7 +57,7 @@ namespace AtmosphericDamage
 {
     //static class so that both components can access it
 
-    [MySessionComponentDescriptor(MyUpdateOrder.BeforeSimulation)]
+    [MySessionComponentDescriptor(MyUpdateOrder.AfterSimulation)]
     public class DamageCore : MySessionComponentBase
     {
         internal DamageCore Instance;
@@ -94,14 +94,12 @@ namespace AtmosphericDamage
 
         public override void UpdateBeforeSimulation()
         {
-
             try
             {
                 if (MyAPIGateway.Session == null)
                     return;
 
                 Tick = (uint)(Session.ElapsedPlayTime.TotalMilliseconds * 0.0625);
-
 
                 if (_disable)
                     return;

@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Runtime.Remoting.Messaging;
 using AtmosphereDamage;
@@ -30,13 +31,13 @@ namespace AtmosphericDamage
     public class RainEffect : MySessionComponentBase
     {
         private bool _init;
-        private static int _updateCount;
         public uint Tick;
 
         internal IMyCamera Camera;
 
         internal bool CheckPlanet;
         private Vector3D planetCentre;
+        private float planetAtmosphereAltitude;
         private MyPlanet closestPlanet;
         private Vector3D cameraDistanceFromSurface;
         private double cameraAltitude;
@@ -74,9 +75,9 @@ namespace AtmosphericDamage
             {
                 if (Camera == null) return;
                 rainImpactEntities.Clear();
-                
                 MyGamePruningStructure.GetTopMostEntitiesInBox(ref frustumBBox, rainImpactEntities);
                 //MyAPIGateway.Parallel.Start(CalculateLines);
+                lines.Clear();
                 CalculateLines();
             }
 
@@ -90,12 +91,12 @@ namespace AtmosphericDamage
             {
                 closestPlanet = MyGamePruningStructure.GetClosestPlanet(Camera.Position);
                 if (closestPlanet != null)
+                {
                     planetCentre = closestPlanet.PositionComp.WorldAABB.Center;
+                    planetAtmosphereAltitude = closestPlanet.AtmosphereAltitude;
+                }
+                    
             }
-
-            lines.Clear();
-
-            
         }
 
         public override void Draw()
@@ -121,13 +122,11 @@ namespace AtmosphericDamage
 
         public void CalculateLines()
         {
-            DsWatch.Start("CLines");
+            //DsWatch.Start("CalculateLines Method");
             try
             {
                 if (closestPlanet != null)
                 {
-                    var planetAtmosphereAltitude = closestPlanet.AtmosphereAltitude;
-
                     var cameraUp = new Vector3D(Camera.Position - planetCentre);
                     var cameraForward = Vector3D.CalculatePerpendicularVector(cameraUp);
                     frustumMatrix = MatrixD.CreateWorld(Camera.Position, cameraForward, cameraUp);
@@ -139,178 +138,349 @@ namespace AtmosphericDamage
 
                     if (cameraAltitude < (planetAtmosphereAltitude / 2))
                     {
-                        var lineAmount = 100;
-                        for (int i = 0; i < lineAmount; i++) // Line calculation LOOP
+                        for (int i = 0; i < rainImpactEntities.Count; i++)
                         {
-                            lineThickness = MyUtils.GetRandomFloat(0.01f, 0.05f);
+                            var intersectedEntity = rainImpactEntities[i];
+                            var voxel = intersectedEntity as MyVoxelBase;
+                            var cubeGrid = intersectedEntity as IMyCubeGrid;
 
-                            offset.Y = (float) frustumBBox.Extents.Y;
-                            offset.X = MyUtils.GetRandomInt(-60, 60);
-                            offset.Z = MyUtils.GetRandomInt(-60, 60);
-
-                            if (offset.X >= 0 && offset.X < 1)
+                            if (cubeGrid != null && cubeGrid.Physics != null)
                             {
-                                offset.X = offset.X + 1;
-                            }
+                                MyOrientedBoundingBoxD gridOBB = new MyOrientedBoundingBoxD(cubeGrid.LocalAABB, cubeGrid.WorldMatrix);
 
-                            if (offset.Z >= 0 && offset.Z < 1)
-                            {
-                                offset.Z = offset.Z + 1;
-                            }
-
-                            Vector3D lineStartPoint = Vector3D.Transform(offset, frustumMatrix);
-                            Vector3D lineEndPoint = planetCentre;
-
-                            var length = frustumBBox.HalfExtents.Y * 0.25; // Shorten line length by 1/4
-                            LineD lineCheck = new LineD(lineStartPoint, lineEndPoint, length);
-
-                            Vector3D finalHitPos = lineEndPoint;
-                            Vector3D hitPos = lineEndPoint;
-                            double? hitDist = double.MaxValue;
-                            double finalHitDistSq = double.MaxValue;
-                            var checkVoxel = true;
-                            var isVoxel = false;
-
-                            lineIntersectedGrids.Clear();
-                            lineIntersectedVoxels.Clear();
-
-                            if (frustumBBox.Intersects(ref lineCheck))
-                            {
-                                for (int j = 0; j < rainImpactEntities.Count; j++) // Line calculation LOOP
+                                var lineAmount = 1000;
+                                for (int j = 0; j < lineAmount; j++) // Line calculation LOOP
                                 {
-                                    var rainedOnEnt = rainImpactEntities[j];
-                                    var grid = rainedOnEnt as IMyCubeGrid;
-                                    if (grid != null && grid.Physics != null)
+
+                                    var lineCheck = CreateALine();
+
+                                    if (!gridOBB.Intersects(ref lineCheck).HasValue) // If we don't intersect a grid continue.
                                     {
-                                        lineIntersectedGrids.Add(rainedOnEnt);
+                                        continue;
                                     }
-                                    else if (rainedOnEnt is MyVoxelBase)
+
+                                    Vector3D finalHitPos = lineCheck.To;
+                                    Vector3D hitPos = lineCheck.To;
+                                    double? hitDist = double.MaxValue;
+                                    double finalHitDistSq = double.MaxValue;
+
+                                    hitDist = GridHitCheck(cubeGrid, lineCheck, lineCheck.From, lineCheck.To);
+
+                                    if (hitDist != null)
                                     {
-                                        lineIntersectedVoxels.Add(rainedOnEnt);
-                                    }
-                                }
-
-                                for (int k = 0; k < lineIntersectedGrids.Count; k++)
-                                {
-                                    var intersectedGrid = lineIntersectedGrids[k];
-                                    var cubeGrid = intersectedGrid as IMyCubeGrid;
-                                    if (cubeGrid != null && cubeGrid.Physics != null)
-                                    {
-
-                                        MyOrientedBoundingBoxD gridOBB = new MyOrientedBoundingBoxD(cubeGrid.LocalAABB, cubeGrid.WorldMatrix);
-                                        //DrawOBB(gridOBB, whiteColor, MySimpleObjectRasterizer.Wireframe, 0.01f);
-
-                                        // If we don't intersect a grid continue.
-                                        if (!gridOBB.Intersects(ref lineCheck).HasValue)
+                                        hitPos = lineCheck.From + (lineCheck.Direction * hitDist.Value);
+                                        if (finalHitDistSq < hitDist.Value)
                                         {
-                                            continue;
+                                            finalHitPos = hitPos;
+                                            finalHitDistSq = hitDist.Value;
                                         }
+                                    }
 
-                                        hitDist = GridHitCheck(cubeGrid, lineCheck, lineStartPoint, lineEndPoint);
+                                    AddToPool(hitDist, lineCheck, lineCheck.From, finalHitPos);
+                                }
+                            }
+
+                            /*
+                            if (voxel != null)
+                            {
+                                var lineAmount = 100;
+                                for (int j = 0; j < lineAmount; j++) // Line calculation LOOP
+                                {
+                                    var lineCheck = CreateALine();
+
+                                    Vector3D finalHitPos = lineCheck.To;
+                                    Vector3D hitPos = lineCheck.From;
+                                    double? hitDist = double.MaxValue;
+                                    double finalHitDistSq = double.MaxValue;
+
+                                    if (frustumBBox.Intersects(ref lineCheck))
+                                    {
+                                        var voxelCheck = VoxelHitCheck(voxel, closestPlanet, lineCheck.From, lineCheck.From, lineCheck);
+                                        if (voxelCheck != Vector3D.Zero && voxelCheck != null)
+                                        {
+                                            finalHitPos = voxelCheck;
+                                            hitDist = Vector3D.Distance(lineCheck.From, finalHitPos);
+                                            //LogVoxelHits(hitDist, voxelHitName, finalHitPos, lineCheck.Length);
+                                        }
 
                                         if (hitDist != null)
                                         {
-                                            hitPos = lineStartPoint + (lineCheck.Direction * hitDist.Value);
+                                            hitPos = lineCheck.From + (lineCheck.Direction * hitDist.Value);
                                             if (finalHitDistSq > hitDist.Value)
                                             {
                                                 finalHitPos = hitPos;
                                                 finalHitDistSq = hitDist.Value;
-                                                checkVoxel = false;
-                                            }
-                                        }
-
-                                        //LogGridBlockHits(finalHitDistSq, finalHitPos, cubeGrid, blk, lineColor);
-                                    }
-                                }
-
-                                /*
-                                if (checkVoxel)
-                                {
-                                    for (int l = 0; l < lineIntersectedVoxels.Count; l++)
-                                    {
-                                        var intersectedVoxel = lineIntersectedVoxels[l];
-                                        var voxelHitName = intersectedVoxel as MyVoxelBase;
-                                        if (voxelHitName != null)
-                                        {
-                                            var voxelCheck = VoxelHitCheck(voxelHitName, closestPlanet, lineStartPoint, lineEndPoint, lineCheck);
-                                            if (voxelCheck != Vector3D.Zero && voxelCheck != null)
-                                            {
-                                                finalHitPos = voxelCheck;
-                                                hitDist = Vector3D.Distance(lineStartPoint, finalHitPos);
-                                                //LogVoxelHits(hitDist, voxelHitName, finalHitPos, lineCheck.Length);
-                                                isVoxel = true;
+                                                
                                             }
                                         }
                                     }
-                                }
-                                */
 
-                                /*
-                                // Log Loop sizes
-                                if (_updateCount % 100 == 0)
-                                {
-                                    Logging.Instance.WriteLine(rainImpactEntities.Count.ToString() + " " +
-                                                               lineIntersectedGrids.Count.ToString() + " " +
-                                                               lineIntersectedVoxels.Count.ToString());
-                                }
-                                */
-
-
-                                //Logging.Instance.WriteLine(isVoxel.ToString());
-                                float distanceTotal = 0f;
-                                var rainDropSize = MyUtils.GetRandomFloat(0.8f, 1.5f);
-                                var randSkip = MyUtils.GetRandomInt(8);
-                                var hasHit = hitDist.Value > 0.001 && (hitDist.Value < lineCheck.Length || isVoxel);
-                                var dropsInDistance = hasHit ? hitDist.Value / rainDropSize : lineCheck.Length / rainDropSize;
-
-                                //var nextStart = hasHit ? finalHitPos : lineStartPoint;
-                                //var dir = hasHit ? -lineCheck.Direction : lineCheck.Direction;
-
-                                var nextStart = hasHit ? finalHitPos : finalHitPos;
-                                var dir = hasHit ? -lineCheck.Direction : -lineCheck.Direction;
-
-                                //var nextStart = hasHit && !checkVoxel ? finalHitPos : finalHitPos;
-                                //var dir = hasHit && !checkVoxel ? -lineCheck.Direction : -lineCheck.Direction;
-
-                                lineColor = checkVoxel ? Color.Green : Color.White;
-
-                                if (checkVoxel && voxelHitName != null && _updateCount % 300 == 0)
-                                {
-                                    //LogVoxelHits(hitDist, voxelHitName, finalHitPos, lineCheck.Length);
-                                }
-
-                                while (distanceTotal < dropsInDistance)
-                                {
-                                    if (randSkip-- <= 0)
-                                    {
-                                        Droplet droplet;
-                                        Droplets.AllocateOrCreate(out droplet);
-
-                                        droplet.StartPoint = nextStart;
-                                        droplet.Direction = dir;
-                                        droplet.DrawLength = rainDropSize;
-                                        droplet.LineColor = lineColor;
-                                        randSkip = MyUtils.GetRandomInt(8);
-                                    }
-
-                                    distanceTotal += rainDropSize;
-                                    nextStart += (dir * rainDropSize);
+                                    AddToPool(hitDist, lineCheck, finalHitPos);
                                 }
                             }
+                            */
+
                         }
                     }
                 }
-                
             }
             catch (Exception e)
             {
                 Logging.Instance.WriteLine(e.ToString());
             }
-            DsWatch.Complete(true);
+            //DsWatch.Complete();
         }
 
-        public static double? GridHitCheck(IMyCubeGrid cubeGrid, LineD lineCheck, Vector3D lineStartPoint, Vector3D lineEndPoint)
+        public LineD CreateALine()
         {
+            var offset = Vector3.Zero;
+            lineThickness = MyUtils.GetRandomFloat(0.1f, 0.5f);
+
+            offset.Y = (float)frustumBBox.Extents.Y;
+            offset.X = MyUtils.GetRandomInt(-60, 60);
+            offset.Z = MyUtils.GetRandomInt(-60, 60);
+
+            if (offset.X >= 0 && offset.X < 1)
+            {
+                offset.X = offset.X + 1;
+            }
+
+            if (offset.Z >= 0 && offset.Z < 1)
+            {
+                offset.Z = offset.Z + 1;
+            }
+
+            double length = frustumBBox.HalfExtents.Y * 0.25; // Shorten line length by 1/4
+
+            Vector3D lineStartPoint = Vector3D.Transform(offset, frustumMatrix);
+            Vector3D lineEndPoint = planetCentre;
+            LineD lineCheck = new LineD(lineStartPoint, lineEndPoint, length);
+            return lineCheck;
+        }
+
+        public void AddToPool(double? hitDist, LineD lineCheck, Vector3D lineStartPoint, Vector3D finalHitPos)
+        {
+            float distanceTotal = 0f;
+            var rainDropSize = MyUtils.GetRandomFloat(0.8f, 1.5f);
+            var randSkip = MyUtils.GetRandomInt(8);
+            var hasHit = hitDist.Value > 0.001 && (hitDist.Value < lineCheck.Length);
+            var dropsInDistance = hasHit ? hitDist.Value / rainDropSize : lineCheck.Length / rainDropSize;
+
+            var nextStart = hasHit ? finalHitPos : lineStartPoint;
+            var dir = hasHit ? -lineCheck.Direction : lineCheck.Direction;
+
+            while (distanceTotal < dropsInDistance)
+            {
+                if (randSkip-- <= 0)
+                {
+                    Droplet droplet;
+                    Droplets.AllocateOrCreate(out droplet);
+
+                    droplet.StartPoint = nextStart;
+                    droplet.Direction = dir;
+                    droplet.DrawLength = rainDropSize;
+                    droplet.LineColor = lineColor;
+                    randSkip = MyUtils.GetRandomInt(8);
+                }
+
+                distanceTotal += rainDropSize;
+                nextStart += (dir * rainDropSize);
+            }
+        }
+
+        //public void CalculateLines()
+        //{
+        //    DsWatch.Start("CalculateLines Method");
+        //    try
+        //    {
+        //        if (closestPlanet != null)
+        //        {
+        //            var planetAtmosphereAltitude = closestPlanet.AtmosphereAltitude;
+
+        //            var cameraUp = new Vector3D(Camera.Position - planetCentre);
+        //            var cameraForward = Vector3D.CalculatePerpendicularVector(cameraUp);
+        //            frustumMatrix = MatrixD.CreateWorld(Camera.Position, cameraForward, cameraUp);
+        //            var offset = Vector3.Zero;
+
+        //            var frustum = new BoundingFrustumD(Camera.ViewMatrix * customProjectionMatrix);
+        //            frustumBBox = BoundingBoxD.CreateInvalid();
+        //            frustumBBox.Include(ref frustum);
+
+        //            if (cameraAltitude < (planetAtmosphereAltitude / 2))
+        //            {
+        //                var lineAmount = 100;
+        //                for (int i = 0; i < lineAmount; i++) // Line calculation LOOP
+        //                {
+        //                    lineThickness = MyUtils.GetRandomFloat(0.01f, 0.05f);
+
+        //                    offset.Y = (float)frustumBBox.Extents.Y;
+        //                    offset.X = MyUtils.GetRandomInt(-60, 60);
+        //                    offset.Z = MyUtils.GetRandomInt(-60, 60);
+
+        //                    if (offset.X >= 0 && offset.X < 1)
+        //                    {
+        //                        offset.X = offset.X + 1;
+        //                    }
+
+        //                    if (offset.Z >= 0 && offset.Z < 1)
+        //                    {
+        //                        offset.Z = offset.Z + 1;
+        //                    }
+
+        //                    Vector3D lineStartPoint = Vector3D.Transform(offset, frustumMatrix);
+        //                    Vector3D lineEndPoint = planetCentre;
+
+        //                    var length = frustumBBox.HalfExtents.Y * 0.25; // Shorten line length by 1/4
+        //                    LineD lineCheck = new LineD(lineStartPoint, lineEndPoint, length);
+
+        //                    Vector3D finalHitPos = lineEndPoint;
+        //                    Vector3D hitPos = lineEndPoint;
+        //                    double? hitDist = double.MaxValue;
+        //                    double finalHitDistSq = double.MaxValue;
+        //                    var checkVoxel = true;
+        //                    var isVoxel = false;
+
+        //                    lineIntersectedGrids.Clear();
+        //                    lineIntersectedVoxels.Clear();
+
+        //                    if (frustumBBox.Intersects(ref lineCheck))
+        //                    {
+        //                        for (int j = 0; j < rainImpactEntities.Count; j++) // Line calculation LOOP
+        //                        {
+        //                            var rainedOnEnt = rainImpactEntities[j];
+        //                            var grid = rainedOnEnt as IMyCubeGrid;
+        //                            if (grid != null && grid.Physics != null)
+        //                            {
+        //                                lineIntersectedGrids.Add(rainedOnEnt);
+        //                            }
+        //                            else if (rainedOnEnt is MyVoxelBase)
+        //                            {
+        //                                lineIntersectedVoxels.Add(rainedOnEnt);
+        //                            }
+        //                        }
+
+        //                        for (int k = 0; k < lineIntersectedGrids.Count; k++)
+        //                        {
+        //                            var intersectedGrid = lineIntersectedGrids[k];
+        //                            var cubeGrid = intersectedGrid as IMyCubeGrid;
+        //                            if (cubeGrid != null && cubeGrid.Physics != null)
+        //                            {
+
+        //                                MyOrientedBoundingBoxD gridOBB = new MyOrientedBoundingBoxD(cubeGrid.LocalAABB, cubeGrid.WorldMatrix);
+        //                                //DrawOBB(gridOBB, whiteColor, MySimpleObjectRasterizer.Wireframe, 0.01f);
+
+        //                                // If we don't intersect a grid continue.
+        //                                if (!gridOBB.Intersects(ref lineCheck).HasValue)
+        //                                {
+        //                                    continue;
+        //                                }
+
+        //                                //hitDist = GridHitCheck(cubeGrid, lineCheck, lineStartPoint, lineEndPoint);
+
+        //                                if (hitDist != null)
+        //                                {
+        //                                    hitPos = lineStartPoint + (lineCheck.Direction * hitDist.Value);
+        //                                    if (finalHitDistSq > hitDist.Value)
+        //                                    {
+        //                                        finalHitPos = hitPos;
+        //                                        finalHitDistSq = hitDist.Value;
+        //                                        checkVoxel = false;
+        //                                    }
+        //                                }
+
+        //                                //LogGridBlockHits(finalHitDistSq, finalHitPos, cubeGrid, blk, lineColor);
+        //                            }
+        //                        }
+
+        //                        /*
+        //                        if (checkVoxel)
+        //                        {
+        //                            for (int l = 0; l < lineIntersectedVoxels.Count; l++)
+        //                            {
+        //                                var intersectedVoxel = lineIntersectedVoxels[l];
+        //                                var voxelHitName = intersectedVoxel as MyVoxelBase;
+        //                                if (voxelHitName != null)
+        //                                {
+        //                                    var voxelCheck = VoxelHitCheck(voxelHitName, closestPlanet, lineStartPoint, lineEndPoint, lineCheck);
+        //                                    if (voxelCheck != Vector3D.Zero && voxelCheck != null)
+        //                                    {
+        //                                        finalHitPos = voxelCheck;
+        //                                        hitDist = Vector3D.Distance(lineStartPoint, finalHitPos);
+        //                                        //LogVoxelHits(hitDist, voxelHitName, finalHitPos, lineCheck.Length);
+        //                                        isVoxel = true;
+        //                                    }
+        //                                }
+        //                            }
+        //                        }
+        //                        */
+
+        //                        /*
+        //                        // Log Loop sizes
+        //                        if (_updateCount % 100 == 0)
+        //                        {
+        //                            Logging.Instance.WriteLine(rainImpactEntities.Count.ToString() + " " +
+        //                                                       lineIntersectedGrids.Count.ToString() + " " +
+        //                                                       lineIntersectedVoxels.Count.ToString());
+        //                        }
+        //                        */
+
+
+        //                        //Logging.Instance.WriteLine(isVoxel.ToString());
+        //                        float distanceTotal = 0f;
+        //                        var rainDropSize = MyUtils.GetRandomFloat(0.8f, 1.5f);
+        //                        var randSkip = MyUtils.GetRandomInt(8);
+        //                        var hasHit = hitDist.Value > 0.001 && (hitDist.Value < lineCheck.Length || isVoxel);
+        //                        var dropsInDistance = hasHit ? hitDist.Value / rainDropSize : lineCheck.Length / rainDropSize;
+
+        //                        //var nextStart = hasHit ? finalHitPos : lineStartPoint;
+        //                        //var dir = hasHit ? -lineCheck.Direction : lineCheck.Direction;
+
+        //                        var nextStart = hasHit ? finalHitPos : finalHitPos;
+        //                        var dir = hasHit ? -lineCheck.Direction : -lineCheck.Direction;
+
+        //                        //var nextStart = hasHit && !checkVoxel ? finalHitPos : finalHitPos;
+        //                        //var dir = hasHit && !checkVoxel ? -lineCheck.Direction : -lineCheck.Direction;
+
+        //                        lineColor = checkVoxel ? Color.Green : Color.White;
+
+        //                        if (checkVoxel && voxelHitName != null && Tick % 300 == 0)
+        //                        {
+        //                            //LogVoxelHits(hitDist, voxelHitName, finalHitPos, lineCheck.Length);
+        //                        }
+
+        //                        while (distanceTotal < dropsInDistance)
+        //                        {
+        //                            if (randSkip-- <= 0)
+        //                            {
+        //                                Droplet droplet;
+        //                                Droplets.AllocateOrCreate(out droplet);
+
+        //                                droplet.StartPoint = nextStart;
+        //                                droplet.Direction = dir;
+        //                                droplet.DrawLength = rainDropSize;
+        //                                droplet.LineColor = lineColor;
+        //                                randSkip = MyUtils.GetRandomInt(8);
+        //                            }
+
+        //                            distanceTotal += rainDropSize;
+        //                            nextStart += (dir * rainDropSize);
+        //                        }
+        //                    }
+        //                }
+        //            }
+        //        }
+
+        //    }
+        //    catch (Exception e)
+        //    {
+        //        Logging.Instance.WriteLine(e.ToString());
+        //    }
+        //    DsWatch.Complete(true);
+        //}
+
+        public double? GridHitCheck(IMyCubeGrid cubeGrid, LineD lineCheck, Vector3D lineStartPoint, Vector3D lineEndPoint)
+        {
+            
             // Hit a grid, do a raycast to it for block hit.
             Vector3I? gridBlockHit = cubeGrid.RayCastBlocks(lineStartPoint, lineEndPoint);
             if (gridBlockHit.HasValue)
@@ -342,12 +512,12 @@ namespace AtmosphericDamage
                     MyOrientedBoundingBoxD blockOBB = new MyOrientedBoundingBoxD(center, blockBBox.HalfExtents, rotMatrix);
 
                     var hitDist = blockOBB.Intersects(ref lineCheck);
+                    
                     return hitDist;
 
                     //DrawOBB(blockOBB, Color.Green, MySimpleObjectRasterizer.Wireframe, 0.01f);
                 }
             }
-
             return double.MaxValue;
         }
 
